@@ -1,0 +1,251 @@
+/*	сохраняем данный файл в кодировке UTF-8		*/
+
+/////////   SWO  ///////////////////////////////////////////////////////////////////
+#include <stdio.h>
+#define ITM_Port8(n)    (*((volatile unsigned char *)(0xE0000000+4*n)))
+#define ITM_Port16(n)   (*((volatile unsigned short*)(0xE0000000+4*n)))
+#define ITM_Port32(n)   (*((volatile unsigned long *)(0xE0000000+4*n)))
+	
+#define DEMCR           (*((volatile unsigned long *)(0xE000EDFC)))
+#define TRCENA          0x01000000
+
+struct __FILE { int handle; /* Add whatever you need here */ };
+FILE __stdout;
+FILE __stdin;
+
+int fputc(int ch, FILE *f) {
+   if (DEMCR & TRCENA) {
+	while (ITM_Port32(0) == 0){};
+    	ITM_Port8(0) = ch;
+  }
+  return(ch);
+}
+////////////////////////////////////////////////////////////////////////////////////
+
+
+
+
+
+
+#include <stdio.h>
+
+#include "vl53l0x_api.h"
+#include "vl53l0x_platform.h"
+
+//######   SETUP  ########################################################################
+
+
+	#define my_I2C				hi2c1		// мой i2c 
+	#define my_I2C_Addr			0x29<<1		// мой адрес датчика i2c по умолчанию
+	
+	//=== указываем порт ( если в кубе назвали XSHUT то тогда нечего указывать не нужно ) ===
+	#if defined (XSHUT_GPIO_Port)
+	#else		
+		#define XSHUT_GPIO_Port		GPIOB 
+		#define XSHUT_Pin			GPIO_PIN_5
+	#endif
+	//=======================================================================================
+	
+// настройки работы модуля ( выбрать что то одно )
+//------------------------------------  
+
+	//#define LONG_RANGE		// 10 mm  - 20 000 mm 	дальная дистанция большая погрешность
+	//#define DEFAULT			// 100 mm - 400 mm		по умолчанию
+	#define HIGH_ACCURACY		// 10 mm - 400 mm		высокая точность
+	//#define HIGH_SPEED		// 10 mm - 400 mm		высокая скорость замера есть погрешность
+	
+//------------------------------------
+
+/*=============================================================
+
+	добавить в менеджер библиотек следующие адреса:
+		../VL53L0X/platform/Inc
+		../VL53L0X/core/inc
+	
+	добавить в проэкт все файлы .с из етих папок
+	
+	подключить в main.c два файла
+		#include "vl53l0x_api.h"
+		#include "vl53l0x_platform.h"
+
+===============================================================*/
+
+//#########################################################################################
+
+
+
+//============================================================================================================
+
+// понадобится несколько переменных для работы датчика
+VL53L0X_RangingMeasurementData_t 	RangingData;					// структура с измерениями
+VL53L0X_Dev_t  						vl53l0x_c; 						// структура устройства
+VL53L0X_DEV    						Dev = &vl53l0x_c;				// структурный показатель
+
+
+// несколько вспомогательных переменных для инициализации
+   uint32_t refSpadCount;
+    uint8_t isApertureSpads;
+    uint8_t VhvSettings;
+    uint8_t PhaseCal;
+	
+	
+	uint8_t Message[64];
+	uint8_t MessageLen;
+//============================================================================================================	
+
+
+
+	.........
+	.........
+
+main()=============================================================================================================================
+
+
+
+//==================================================================================
+
+	MessageLen = sprintf((char*)Message, "GKP VL53L0X test\n\r");
+	// HAL_UART_Transmit(&huart2, Message, MessageLen, 100);
+	printf("%s \r\n", Message );
+
+	Dev->I2cHandle = &my_I2C;
+	Dev->I2cDevAddr = my_I2C_Addr;
+
+	HAL_GPIO_WritePin(XSHUT_GPIO_Port, XSHUT_Pin, GPIO_PIN_RESET); // Disable XSHUT
+	HAL_Delay(20);
+	
+	HAL_GPIO_WritePin(XSHUT_GPIO_Port, XSHUT_Pin, GPIO_PIN_SET); // Enable XSHUT
+	HAL_Delay(20);
+
+	//
+	// VL53L0X init for Single Measurement
+	//
+
+	VL53L0X_WaitDeviceBooted( Dev );
+	VL53L0X_DataInit( Dev );
+	VL53L0X_StaticInit( Dev );
+	VL53L0X_PerformRefCalibration(Dev, &VhvSettings, &PhaseCal);
+	VL53L0X_PerformRefSpadManagement(Dev, &refSpadCount, &isApertureSpads);
+	VL53L0X_SetDeviceMode(Dev, VL53L0X_DEVICEMODE_SINGLE_RANGING);
+
+	// Enable/Disable Sigma and Signal check
+	VL53L0X_SetLimitCheckEnable(Dev, VL53L0X_CHECKENABLE_SIGMA_FINAL_RANGE, 1);
+	VL53L0X_SetLimitCheckEnable(Dev, VL53L0X_CHECKENABLE_SIGNAL_RATE_FINAL_RANGE, 1);
+  
+	  
+	//------------------------------------  
+	#ifdef LONG_RANGE	// 10 mm  - 20 000 mm 
+
+		VL53L0X_SetLimitCheckValue(Dev, VL53L0X_CHECKENABLE_SIGNAL_RATE_FINAL_RANGE, (FixPoint1616_t)(0.1*65536));// (default is 0.25 MCPS)
+		VL53L0X_SetLimitCheckValue(Dev, VL53L0X_CHECKENABLE_SIGMA_FINAL_RANGE, (FixPoint1616_t)(60*65536));
+	  
+		VL53L0X_SetMeasurementTimingBudgetMicroSeconds(Dev, 33000);	// (default is about 33 ms)
+	  
+		// Устанавливаем период импульса VCSEL (лазер с поверхностным излучением с вертикальной полостью) для 
+		// данного типа периода (преддиапазон или конечный диапазон) на заданное значение в PCLK. 
+		// Более длительные периоды увеличивают потенциальный диапазон датчика. 
+		// Допустимые значения (только четные числа): 
+		// pre: от 12 до 18 (инициализированное значение по умолчанию: 14) 
+		// final: от 8 до 14 (инициализированное значение по умолчанию: 10) 
+		VL53L0X_SetVcselPulsePeriod(Dev, VL53L0X_VCSEL_PERIOD_PRE_RANGE, 18);
+		VL53L0X_SetVcselPulsePeriod(Dev, VL53L0X_VCSEL_PERIOD_FINAL_RANGE, 14);
+
+	#endif  
+	//-----------------------------------
+	#ifdef DEFAULT	// 100 mm - 400 mm
+	  
+		VL53L0X_SetLimitCheckValue(Dev, VL53L0X_CHECKENABLE_SIGNAL_RATE_FINAL_RANGE, (FixPoint1616_t)(0.25*65536));// (default is 0.25 MCPS)
+		VL53L0X_SetLimitCheckValue(Dev, VL53L0X_CHECKENABLE_SIGMA_FINAL_RANGE, (FixPoint1616_t)(60*65536));
+		
+		VL53L0X_SetMeasurementTimingBudgetMicroSeconds(Dev, 33000);	// (default is about 33 ms)
+		
+		// Устанавливаем период импульса VCSEL (лазер с поверхностным излучением с вертикальной полостью) для 
+		// данного типа периода (преддиапазон или конечный диапазон) на заданное значение в PCLK. 
+		// Более длительные периоды увеличивают потенциальный диапазон датчика. 
+		// Допустимые значения (только четные числа): 
+		// pre: от 12 до 18 (инициализированное значение по умолчанию: 14) 
+		// final: от 8 до 14 (инициализированное значение по умолчанию: 10) 
+		VL53L0X_SetVcselPulsePeriod(Dev, VL53L0X_VCSEL_PERIOD_PRE_RANGE, 14);
+		VL53L0X_SetVcselPulsePeriod(Dev, VL53L0X_VCSEL_PERIOD_FINAL_RANGE, 10);
+	#endif  
+	//----------------------------------  
+	#ifdef HIGH_ACCURACY	// 10 mm - 400 mm
+
+		VL53L0X_SetLimitCheckValue(Dev, VL53L0X_CHECKENABLE_SIGNAL_RATE_FINAL_RANGE, (FixPoint1616_t)(0.25*65536));// (default is 0.25 MCPS)
+		VL53L0X_SetLimitCheckValue(Dev, VL53L0X_CHECKENABLE_SIGMA_FINAL_RANGE, (FixPoint1616_t)(60*65536));
+		
+		VL53L0X_SetMeasurementTimingBudgetMicroSeconds(Dev, 200000);	// (default is about 33 ms) - 200ms
+		
+		// Устанавливаем период импульса VCSEL (лазер с поверхностным излучением с вертикальной полостью) для 
+		// данного типа периода (преддиапазон или конечный диапазон) на заданное значение в PCLK. 
+		// Более длительные периоды увеличивают потенциальный диапазон датчика. 
+		// Допустимые значения (только четные числа): 
+		// pre: от 12 до 18 (инициализированное значение по умолчанию: 14) 
+		// final: от 8 до 14 (инициализированное значение по умолчанию: 10) 
+		VL53L0X_SetVcselPulsePeriod(Dev, VL53L0X_VCSEL_PERIOD_PRE_RANGE, 18);
+		VL53L0X_SetVcselPulsePeriod(Dev, VL53L0X_VCSEL_PERIOD_FINAL_RANGE, 14);
+
+	#endif 
+	//---------------------------------
+	#ifdef HIGH_SPEED	// // 10 mm - 400 mm
+		
+		VL53L0X_SetLimitCheckValue(Dev, VL53L0X_CHECKENABLE_SIGNAL_RATE_FINAL_RANGE, (FixPoint1616_t)(0.25*65536));// (default is 0.25 MCPS)
+		VL53L0X_SetLimitCheckValue(Dev, VL53L0X_CHECKENABLE_SIGMA_FINAL_RANGE, (FixPoint1616_t)(60*65536));
+		
+		VL53L0X_SetMeasurementTimingBudgetMicroSeconds(Dev, 20000);	// (default is about 33 ms) - 20ms
+		
+		// Устанавливаем период импульса VCSEL (лазер с поверхностным излучением с вертикальной полостью) для 
+		// данного типа периода (преддиапазон или конечный диапазон) на заданное значение в PCLK. 
+		// Более длительные периоды увеличивают потенциальный диапазон датчика. 
+		// Допустимые значения (только четные числа): 
+		// pre: от 12 до 18 (инициализированное значение по умолчанию: 14) 
+		// final: от 8 до 14 (инициализированное значение по умолчанию: 10) 
+		VL53L0X_SetVcselPulsePeriod(Dev, VL53L0X_VCSEL_PERIOD_PRE_RANGE, 18);
+		VL53L0X_SetVcselPulsePeriod(Dev, VL53L0X_VCSEL_PERIOD_FINAL_RANGE, 14);
+		
+	#endif
+	//---------------------------------
+
+	/////////////  10 mm- 100 mm ///////////////////////////////////////////////////////////////////////////////////
+	//  VL53L0X_SetLimitCheckValue(Dev, VL53L0X_CHECKENABLE_SIGNAL_RATE_FINAL_RANGE, (FixPoint1616_t)(0.25*65536));
+	//  VL53L0X_SetLimitCheckValue(Dev, VL53L0X_CHECKENABLE_SIGMA_FINAL_RANGE, (FixPoint1616_t)(60*65536));
+	//  VL53L0X_SetMeasurementTimingBudgetMicroSeconds(Dev, 200000);
+	//  VL53L0X_SetVcselPulsePeriod(Dev, VL53L0X_VCSEL_PERIOD_PRE_RANGE, 14);
+	//  VL53L0X_SetVcselPulsePeriod(Dev, VL53L0X_VCSEL_PERIOD_FINAL_RANGE, 10);
+	////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+//==================================================================================================================================
+
+
+
+
+	.........
+	.........
+	.........
+
+while(1)===========================================================================================================================
+
+
+
+//================================================================================================================================	  
+	  
+	  VL53L0X_PerformSingleRangingMeasurement(Dev, &RangingData);
+		
+	  // Значение RangingData.RangeStatus содержит информацию о том, было ли измерение успешным. Приятно просеивать неправильные измерения. 
+	  if(RangingData.RangeStatus == 0)
+	  {
+		  MessageLen = sprintf((char*)Message, "Measured distance: %i\n\r", RangingData.RangeMilliMeter);
+		  //HAL_UART_Transmit(&huart2, Message, MessageLen, 100);
+		   printf("%s \r\n", Message );
+	  }
+//================================================================================================================================	  
+
+
+
+	.........
+	.........
+	.........
+	.........
+
+=== end while(1) ==================================================================================================================
+=== end main() ====================================================================================================================
